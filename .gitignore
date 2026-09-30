@@ -1,0 +1,11 @@
+.env
+.env.local
+*.session
+*.session-journal
+worker/sessions/
+worker/*.db
+__pycache__/
+.pytest_cache/
+.venv/
+node_modules/
+.next/

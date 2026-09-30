@@ -1,0 +1,16 @@
+[Unit]
+Description=NSE Alerts worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/NSE_CAN/worker
+ExecStart=/home/ubuntu/NSE_CAN/worker/.venv/bin/python -m nse_alerts.cli run
+Restart=always
+RestartSec=3
+# The app loads worker/.env itself; nothing secret belongs in this file.
+
+[Install]
+WantedBy=multi-user.target

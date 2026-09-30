@@ -1,0 +1,120 @@
+# Everything tunable lives here. The worker re-reads this file whenever it changes,
+# so polling intervals, the model, prompts and channel switches apply without a restart.
+# Secrets (API keys, tokens) are NOT here: put them in worker/.env (see .env.example).
+# Any value can also be overridden by an environment variable, for example:
+#   NSE_ALERTS__polling__nse__market_hours_interval_sec=3
+
+app:
+  timezone: Asia/Kolkata
+  log_level: INFO
+
+market:                      # decides which polling interval applies
+  open: "09:00"              # includes pre-open
+  close: "16:00"
+  weekdays: [0, 1, 2, 3, 4]  # Monday=0 ... Sunday=6
+  holidays: []               # exchange holidays as "YYYY-MM-DD", treated like weekends
+
+universe:
+  file: ../data/nifty50.csv  # symbols to track; refresh with: python -m nse_alerts.cli sync-universe
+  store_non_universe: false  # also store announcements for stocks outside the universe
+
+polling:
+  nse:
+    enabled: true
+    market_hours_interval_sec: 5
+    after_market_interval_sec: 60
+    weekend_interval_sec: 300
+    timeout_sec: 8
+    announcements: true
+    corporate_actions: true
+    corporate_actions_every_n_polls: 6   # the corporate actions list changes slowly
+    gap_fill: true                       # if the latest-20 window overflows, fetch the whole day
+    base_url: https://www.nseindia.com
+    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    proxy_url_env: NSE_PROXY_URL         # optional: name of the env var holding a proxy URL
+    failure_alert_after: 5               # consecutive failed polls before an outage warning
+  bse:                                   # built but OFF until a proxy or another route is available
+    enabled: false
+    market_hours_interval_sec: 10
+    after_market_interval_sec: 120
+    weekend_interval_sec: 600
+    timeout_sec: 8
+    proxy_url_env: BSE_PROXY_URL
+    scrip_map_file: ""                   # optional CSV: symbol,scrip_code (overrides name matching)
+    duplicate_window_min: 10             # an item also seen on NSE within this window is a duplicate
+
+alerts:
+  categories: [announcement, corporate_action]   # add "news" once a news source is connected
+  include_subjects: []                   # if set, only subjects containing one of these (case-insensitive)
+  ignore_subjects: []                    # subjects containing any of these are stored but not sent
+  max_event_age_sec: 600                 # older items (after a restart, say) are stored, not sent
+  generate_summary_without_subscribers: false
+
+context:                                 # fundamentals and technicals kept ready for every stock
+  enabled: true
+  refresh_market_hours_sec: 600
+  refresh_after_market_sec: 21600
+  max_age_sec: 172800                    # ignore cached data older than this
+  concurrency: 4
+  history_period: 1y
+  news_items: 3
+
+attachments:
+  fetch_timeout_sec: 8
+  max_size_mb: 45                        # above this the channel gets a link instead
+  extract_text: true                     # read the filing PDF so the summary can use it
+  text_timeout_sec: 6
+  max_pages: 12
+  max_chars: 9000
+
+summary:
+  provider: openrouter
+  base_url: https://openrouter.ai/api/v1
+  model: openai/gpt-4o-mini              # change freely: any OpenRouter model id
+  fallback_model: ""                     # tried if the main model errors or times out
+  provider_sort: ""                      # "", "latency", "throughput" or "price" (OpenRouter routing)
+  temperature: 0.2
+  max_tokens: 450
+  target_words: 150
+  min_words: 130
+  max_words: 170
+  request_timeout_sec: 20
+  deadline_sec: 35                       # seconds after the SLA clock starts; after this, send the template summary
+  min_budget_sec: 8                      # the model always gets at least this long, even if the feed was late
+  system_prompt: ""                      # empty = built-in prompt (see summarizer.py)
+
+sla:
+  target_sec: 60
+  clock_start: listed                    # listed = from NSE dissemination time, detected = from our first sighting
+
+delivery:
+  max_attempts: 3
+  retry_delay_sec: 1.0
+  send_text_before_attachment: true
+
+channels:
+  telegram:                              # MTProto user-client (Telethon), ACTIVE
+    enabled: true
+    session: sessions/nse_alerts         # session file path (login once: cli telegram-login)
+    send_attachments: true
+    max_concurrency: 8
+    min_interval_ms: 40                  # pause between sends to stay clear of flood limits
+    flood_wait_max_sec: 10               # sleep and retry when Telegram asks for a short wait
+    keep_contacts: true
+    resolver_interval_sec: 3
+    verification_interval_sec: 2
+    max_new_people_per_hour: 60          # phone lookups and verification codes to new people, per hour
+    handle_stop_keyword: true
+  whatsapp:                              # WhatsApp Business Cloud API, built but OFF
+    enabled: false
+    api_version: v21.0
+    template_name: nse_alert
+    template_language: en
+    template_has_document_header: false
+    send_attachments: true
+    max_concurrency: 8
+
+admin:
+  notify_phone: ""                       # optional: Telegram alert to this number on feed outage/recovery
+
+heartbeat_interval_sec: 10
