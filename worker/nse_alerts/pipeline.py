@@ -26,6 +26,7 @@ class Pipeline:
         summarizer: Summarizer,
         fetcher: AttachmentFetcher,
         channels: dict[str, Channel],
+        quotes=None,
     ):
         self.store = store
         self.db = db
@@ -33,6 +34,8 @@ class Pipeline:
         self.summarizer = summarizer
         self.fetcher = fetcher
         self.channels = channels
+        self.quotes = quotes
+        self.followups = None  # set by the app once the follow-up service exists
 
     async def handle(self, event_id: int) -> None:
         try:
@@ -76,6 +79,11 @@ class Pipeline:
         att_task = None
         if ev.get("attachment_url"):
             att_task = asyncio.create_task(self.fetcher.fetch(ev["attachment_url"], cfg))
+        quote_task = index_task = None
+        if self.quotes is not None:
+            quote_task = asyncio.create_task(self.quotes.stock(ev["symbol"], cfg))
+            if self.followups is not None and self.followups.wanted(ev, cfg):
+                index_task = asyncio.create_task(self.quotes.index(cfg))
 
         summary = await self._summary(ev, att_task, cfg)
         await self.db.execute(
@@ -84,7 +92,8 @@ class Pipeline:
             s=summary.text, m=summary.model, ms=summary.ms, fb=summary.fallback, id=event_id,
         )
 
-        rich, plain = build_text(ev, summary.text)
+        quote = await self._result(quote_task)
+        rich, plain = build_text(ev, summary.text, quote)
         att: Attachment | None = None
         if att_task is not None:
             try:
@@ -97,6 +106,20 @@ class Pipeline:
         )
         await self.db.execute("update events set status = 'done', processed_at = :now where id = :id",
                               id=event_id, now=utcnow())
+        if self.followups is not None and quote is not None:
+            sent = await self.db.fetch_one(
+                "select count(*) as n from deliveries where event_id = :id and status = 'sent'", id=event_id)
+            if sent and int(sent["n"]) > 0:
+                await self.followups.schedule(ev, quote, await self._result(index_task))
+
+    @staticmethod
+    async def _result(task):
+        if task is None:
+            return None
+        try:
+            return await task
+        except Exception:
+            return None
 
     async def _summary(self, ev: dict[str, Any], att_task, cfg: Config) -> SummaryResult:
         s = cfg.section("summary")
@@ -130,7 +153,8 @@ class Pipeline:
             log.warning("summary for event %s missed its %.0fs budget, using the template", ev["id"], budget)
         except Exception as exc:
             log.warning("summary for event %s failed (%s), using the template", ev["id"], exc)
-        return SummaryResult(text=template_summary(item, ctx), model="template", ms=0, fallback=True)
+        return SummaryResult(text=template_summary(item, ctx, int(s.get("max_words", 100))), model="template",
+                             ms=0, fallback=True)
 
     async def _deliver_channel(self, channel: Channel, subs: list[dict[str, Any]], ev: dict[str, Any],
                                rich: str, plain: str, att: Attachment | None, cfg: Config) -> None:

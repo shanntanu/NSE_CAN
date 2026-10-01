@@ -108,7 +108,8 @@ def test_template_summary_uses_cached_numbers():
     ctx = {"technicals": {"last_close": 120.5, "day_change_pct": 1.2, "rsi14": 55.0, "vs_sma200": "above"},
            "fundamentals": {"pe_trailing": 9.8}}
     text = template_summary(item, ctx)
-    assert "Dividend - Rs 2.35" in text and "Last close Rs 120.5" in text and "P/E 9.8" in text
+    assert "Dividend - Rs 2.35" in text and "P/E 9.8" in text and text.startswith("\u2022 ")
+    assert len(text.split()) <= 100
 
 
 def test_message_text_is_escaped_and_has_the_footer():
@@ -145,7 +146,7 @@ async def test_summarizer_sends_the_configured_model_and_cleans_the_answer(store
     result = await _openrouter(handler, monkeypatch).summarise(
         {"symbol": "TCS", "subject": "Results"}, {"technicals": {"rsi14": 50}}, "filing words", store.cfg)
     assert seen["body"]["model"] == store.cfg.get("summary.model") and seen["auth"] == "Bearer test-key"
-    assert result.text == "Profit rose 10%." and result.model == seen["body"]["model"]
+    assert result.text == "\u2022 Profit rose 10%." and result.model == seen["body"]["model"]
 
 
 async def test_summarizer_falls_back_to_the_second_model(store, monkeypatch):
@@ -163,10 +164,44 @@ async def test_summarizer_falls_back_to_the_second_model(store, monkeypatch):
 
     cfg = ConfigStore(store.path).cfg
     result = await _openrouter(handler, monkeypatch).summarise({"symbol": "TCS"}, None, "", cfg)
-    assert result.text == "Backup answer." and calls[-1] == "backup/model" and len(calls) == 2
+    assert result.text == "\u2022 Backup answer." and calls[-1] == "backup/model" and len(calls) == 2
 
 
 async def test_summarizer_without_a_key_raises(store, monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(SummaryError):
         await Summarizer().summarise({"symbol": "TCS"}, None, "", store.cfg)
+
+
+def test_bullets_are_normalised_from_any_style():
+    from nse_alerts.summarizer import format_bullets
+    assert format_bullets("- one thing\n* another\n2) third") == "\u2022 one thing\n\u2022 another\n\u2022 third"
+    assert format_bullets("First sentence. Second sentence!") == "\u2022 First sentence.\n\u2022 Second sentence!"
+
+
+def test_trim_bullets_drops_whole_bullets_to_stay_under_the_limit():
+    from nse_alerts.summarizer import count_words, trim_bullets
+    text = "\n".join(f"\u2022 {' '.join(['word'] * 20)}" for _ in range(6))
+    out = trim_bullets(text, 100)
+    assert count_words(out) <= 100 and out.count("\u2022") == 4
+    long_single = "\u2022 " + " ".join(["w"] * 200)
+    assert count_words(trim_bullets(long_single, 30)) <= 30
+
+
+def test_market_line_shows_price_change_volume_and_time():
+    from nse_alerts.messages import fmt_volume, market_line
+    from nse_alerts.quotes import Quote
+    q = Quote("TCS", 2065.7, 2075.0, 1_230_000, utc(2026, 10, 1, 6, 44))
+    line = market_line(q)
+    assert "\u20b92,065.70" in line and "-0.45% today" in line and "12.30 lakh" in line and "12:14 IST" in line
+    assert "+1.20% since alert" in market_line(q, 1.2)
+    assert market_line(None) == "" and fmt_volume(25_000_000) == "2.50 crore" and fmt_volume(950) == "950"
+
+
+def test_follow_up_verdict_compares_the_stock_with_the_market():
+    from nse_alerts.followup import classify
+    assert classify(1.5, 0.2, 0.3) == "Positive"
+    assert classify(-1.0, 0.1, 0.3) == "Negative"
+    assert classify(0.4, 0.3, 0.3) == "No clear impact"      # moved with the market
+    assert classify(-0.5, -1.0, 0.3) == "Positive"           # fell less than the market
+    assert classify(None, 0.2, 0.3) == "No clear impact"

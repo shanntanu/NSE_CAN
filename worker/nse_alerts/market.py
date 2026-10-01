@@ -31,3 +31,11 @@ def poll_interval(section: Config, state: str) -> float:
         "weekend": "weekend_interval_sec",
     }[state]
     return float(section.get(key, 60))
+
+
+def session_close(now: datetime, cfg: Config) -> datetime:
+    """The closing time (UTC) of the trading day that `now` falls on."""
+    tz = ZoneInfo(cfg.get("app.timezone", "Asia/Kolkata"))
+    local = now.astimezone(tz)
+    closes = _parse_hhmm(cfg.get("market.close", "16:00"))
+    return datetime.combine(local.date(), closes, tzinfo=tz).astimezone(ZoneInfo("UTC"))

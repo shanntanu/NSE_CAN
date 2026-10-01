@@ -10,9 +10,11 @@ from .channels.telegram import TelegramChannel
 from .channels.whatsapp import WhatsAppChannel
 from .config import ConfigStore
 from .context import ContextStore
+from .followup import FollowUps
 from .db import Database, utcnow
 from .pipeline import Pipeline
 from .poller import Poller
+from .quotes import QuoteService
 from .sources.bse import BseClient
 from .sources.nse import NseClient
 from .summarizer import Summarizer
@@ -62,7 +64,11 @@ class App:
         self.telegram = TelegramChannel(self.store, self.db)
         self.whatsapp = WhatsAppChannel(self.store)
         self.channels = {"telegram": self.telegram, "whatsapp": self.whatsapp}
-        self.pipeline = Pipeline(self.store, self.db, self.context, self.summarizer, self.fetcher, self.channels)
+        self.quotes = QuoteService()
+        self.pipeline = Pipeline(self.store, self.db, self.context, self.summarizer, self.fetcher, self.channels,
+                                 self.quotes)
+        self.followups = FollowUps(self.store, self.db, self.summarizer, self.context, self.quotes, self.pipeline)
+        self.pipeline.followups = self.followups
         self.nse = NseClient(self.store.cfg)
         self.bse = BseClient(self.store.cfg, self.universe)
         self.poller = Poller(self.store, self.db, self.universe, self.pipeline, self.nse, self.bse, self.notify_admin)
@@ -100,6 +106,7 @@ class App:
             asyncio.create_task(supervise("nse poller", self.poller.run_nse)),
             asyncio.create_task(supervise("bse poller", self.poller.run_bse)),
             asyncio.create_task(supervise("context refresh", lambda: self.context.run(self.store))),
+            asyncio.create_task(supervise("follow-ups", self.followups.run)),
         ]
         if self.telegram.client:
             tasks.append(asyncio.create_task(

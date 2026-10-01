@@ -116,3 +116,27 @@ create table if not exists system_status (
   value      text,
   updated_at timestamptz not null default now()
 );
+
+-- One follow-up per alert: price and volume at alert time, then the result about 30 minutes later.
+create table if not exists follow_ups (
+  event_id           bigint primary key references events(id) on delete cascade,
+  symbol             text not null,
+  due_at             timestamptz not null,
+  status             text not null default 'pending',   -- pending | processing | sent | failed | skipped
+  attempts           integer not null default 0,
+  price_at_alert     double precision,
+  volume_at_alert    bigint,
+  index_at_alert     double precision,
+  price_now          double precision,
+  volume_now         bigint,
+  index_now          double precision,
+  change_pct         double precision,                  -- stock move since the alert
+  index_change_pct   double precision,                  -- Nifty 50 move since the alert
+  verdict            text,                              -- Positive | Negative | No clear impact
+  summary            text,
+  summary_model      text,
+  follow_up_event_id bigint references events(id),
+  created_at         timestamptz not null default now(),
+  processed_at       timestamptz
+);
+create index if not exists idx_follow_ups_due on follow_ups(status, due_at);

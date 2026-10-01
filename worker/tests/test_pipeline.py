@@ -196,3 +196,95 @@ async def test_config_changes_apply_without_a_restart(system):
     system.store.path.write_text(text, encoding="utf-8")
     os.utime(system.store.path, (time.time() + 5, time.time() + 5))
     assert system.store.cfg.get("polling.nse.market_hours_interval_sec") == 2
+
+
+def open_all_day(system):
+    system.store.cfg.data["market"].update({"open": "00:00", "close": "23:59", "weekdays": [0, 1, 2, 3, 4, 5, 6]})
+
+
+async def test_alert_shows_price_and_volume(system):
+    await add_subscriber(system.db)
+    system.nse.announcement_items = [announcement("1")]
+    await system.poller.poll_nse_once(system.store.cfg)
+    await settle()
+    text = system.channel.texts[0][1]
+    assert "Price \u20b9100.00" in text and "Volume 10.00 lakh" in text
+
+
+async def test_follow_up_is_scheduled_and_sent_after_the_delay(system):
+    sid = await add_subscriber(system.db)
+    open_all_day(system)
+    system.nse.announcement_items = [announcement("1")]
+    await system.poller.poll_nse_once(system.store.cfg)
+    await settle()
+    fu = await system.db.fetch_one("select * from follow_ups")
+    assert fu["status"] == "pending" and fu["price_at_alert"] == 100.0 and fu["volume_at_alert"] == 1_000_000
+    await system.db.execute("update follow_ups set due_at = :d", d=utcnow() - timedelta(seconds=1))
+
+    system.quotes.price, system.quotes.volume, system.quotes.index_price = 102.0, 1_800_000, 22002.2
+    assert await system.followups.process_due(system.store.cfg) == 1
+
+    done = await system.db.fetch_one("select * from follow_ups")
+    assert done["status"] == "sent" and done["verdict"] == "Positive" and round(done["change_pct"], 2) == 2.0
+    assert done["volume_now"] == 1_800_000 and done["follow_up_event_id"]
+    assert len(system.channel.texts) == 2
+    update = system.channel.texts[1][1]
+    assert update.startswith("UPDATE (Positive) | TCS") and "+2.00% since alert" in update
+    assert "Volume since the alert: 8.00 lakh" in update and "Price moved with the market" in update
+    d = await system.db.fetch_one("select * from deliveries where event_id = :e", e=done["follow_up_event_id"])
+    assert d["subscriber_id"] == sid and d["status"] == "sent"
+
+
+async def test_follow_up_only_goes_to_people_who_got_the_alert(system):
+    open_all_day(system)
+    got = await add_subscriber(system.db, "+919999900001")
+    system.nse.announcement_items = [announcement("1")]
+    await system.poller.poll_nse_once(system.store.cfg)
+    await settle()
+    await add_subscriber(system.db, "+919999900002")   # joined after the alert
+    await system.db.execute("update follow_ups set due_at = :d", d=utcnow() - timedelta(seconds=1))
+    await system.followups.process_due(system.store.cfg)
+    assert [sid for sid, _ in system.channel.texts] == [got, got]
+
+
+async def test_no_follow_up_when_the_alert_arrives_outside_market_hours(system):
+    await add_subscriber(system.db)
+    system.store.cfg.data["market"]["weekdays"] = []        # always closed
+    system.nse.announcement_items = [announcement("1")]
+    await system.poller.poll_nse_once(system.store.cfg)
+    await settle()
+    assert await system.db.fetch_one("select * from follow_ups") is None
+    assert len(system.channel.texts) == 1
+
+
+async def test_follow_up_is_pulled_forward_to_the_close(system):
+    from nse_alerts.db import as_dt
+    from nse_alerts.market import session_close
+    await add_subscriber(system.db)
+    open_all_day(system)
+    system.store.cfg.data["follow_up"]["delay_min"] = 3000  # far later than the close
+    system.nse.announcement_items = [announcement("1")]
+    await system.poller.poll_nse_once(system.store.cfg)
+    await settle()
+    fu = await system.db.fetch_one("select due_at from follow_ups")
+    assert as_dt(fu["due_at"]) == session_close(utcnow(), system.store.cfg)
+
+
+async def test_follow_up_retries_when_no_quote_then_gives_up(system):
+    await add_subscriber(system.db)
+    open_all_day(system)
+    system.nse.announcement_items = [announcement("1")]
+    await system.poller.poll_nse_once(system.store.cfg)
+    await settle()
+
+    async def none(symbol, cfg):
+        return None
+
+    system.quotes.stock = none
+    for _ in range(3):
+        await system.db.execute("update follow_ups set due_at = :d where status = 'pending'",
+                                d=utcnow() - timedelta(seconds=1))
+        await system.followups.process_due(system.store.cfg)
+    row = await system.db.fetch_one("select status, attempts from follow_ups")
+    assert row["status"] == "failed" and row["attempts"] == 3
+    assert len(system.channel.texts) == 1

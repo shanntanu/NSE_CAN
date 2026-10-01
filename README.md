@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # NSE Alerts
 
 Sends short AI summaries of NSE corporate actions and announcements for the Nifty 50 to users on Telegram
@@ -27,9 +28,13 @@ NSE website ──poll every 5s──▶  worker (Python, always on, AWS EC2)  �
 2. Nifty 50 items are stored in `events`; corporate actions also go in `corporate_actions`.
 3. For each new alert with subscribers, the worker downloads the attachment, reads the filing text, takes the stock's
    cached fundamentals and technicals (refreshed every 10 minutes in market hours), and asks OpenRouter for a summary
-   of about 150 words. If the model is late or fails, a short template summary is sent instead of missing the deadline.
+   of 3 to 4 bullets, under 100 words. The current price and volume (from Yahoo Finance, about a minute behind) are added under it. If the model is late or fails, a short template summary is sent instead of missing the deadline.
 4. The text goes out first, then the attachment. Each send is recorded in `deliveries` with the time since NSE listed it
    (`exchdisstime`) and since our poller saw it, and whether it met the 60-second target.
+5. 30 minutes later (or at the close, if sooner) the same people get a follow-up of about 30 words in 2 bullets: did the
+   price move more or less than the Nifty 50 (positive, negative or no clear impact), what volume suggests, and the
+   current price and volume. Alerts that arrive outside market hours get no follow-up. See the `follow_up` and `quotes`
+   settings; results are stored in the `follow_ups` table (run the schema again to add it).
 
 ## Set up
 
@@ -91,3 +96,6 @@ cd web && npm test
 These parts were built and unit-tested but could not be run here: sending through a real Telegram account, the
 WhatsApp channel, the web app against a real Postgres, and BSE. Run `poll-once`, `summarise-test` and a message to
 yourself with `add-subscriber` before relying on it.
+=======
+# NSE_CAN
+>>>>>>> f529941c510e2176028da4608778ad470d3c2877

@@ -9,7 +9,9 @@ from nse_alerts.attachments import Attachment
 from nse_alerts.channels.base import Channel
 from nse_alerts.config import ConfigStore
 from nse_alerts.context import ContextStore
-from nse_alerts.db import Database
+from nse_alerts.db import Database, utcnow
+from nse_alerts.followup import FollowUps
+from nse_alerts.quotes import Quote
 from nse_alerts.pipeline import Pipeline
 from nse_alerts.poller import Poller
 from nse_alerts.summarizer import SummaryResult
@@ -41,6 +43,24 @@ class FakeSummarizer:
     async def summarise(self, item, context, filing_text, cfg):
         self.calls.append(item)
         return SummaryResult(text="Short summary of the filing.", model="fake/model", ms=5)
+
+
+    async def summarise_follow_up(self, payload, cfg):
+        self.calls.append(payload)
+        return SummaryResult(text="\u2022 Price moved with the market.\n\u2022 Volume was steady.", model="fake/model", ms=3)
+
+
+class FakeQuotes:
+    def __init__(self):
+        self.price = 100.0
+        self.volume = 1_000_000
+        self.index_price = 22000.0
+
+    async def stock(self, symbol, cfg):
+        return Quote(symbol, self.price, 99.0, self.volume, utcnow())
+
+    async def index(self, cfg):
+        return Quote("NIFTY 50", self.index_price, 21990.0, None, utcnow())
 
 
 class FakeFetcher:
@@ -102,7 +122,11 @@ async def system(store, db, universe):
     channel = FakeChannel()
     summarizer = FakeSummarizer()
     context = ContextStore(db, universe)
-    pipeline = Pipeline(store, db, context, summarizer, FakeFetcher(), {"telegram": channel})
+    quotes = FakeQuotes()
+    pipeline = Pipeline(store, db, context, summarizer, FakeFetcher(), {"telegram": channel}, quotes)
+    followups = FollowUps(store, db, summarizer, context, quotes, pipeline)
+    pipeline.followups = followups
     poller = Poller(store, db, universe, pipeline, nse)
     return type("System", (), dict(nse=nse, channel=channel, summarizer=summarizer, context=context,
-                                   pipeline=pipeline, poller=poller, db=db, store=store))()
+                                   pipeline=pipeline, poller=poller, db=db, store=store, quotes=quotes,
+                                   followups=followups))()

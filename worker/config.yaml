@@ -74,14 +74,34 @@ summary:
   fallback_model: ""                     # tried if the main model errors or times out
   provider_sort: ""                      # "", "latency", "throughput" or "price" (OpenRouter routing)
   temperature: 0.2
-  max_tokens: 450
-  target_words: 150
-  min_words: 130
-  max_words: 170
+  max_tokens: 250
+  bullets: 4                             # bullet points in the alert summary
+  target_words: 80                       # the whole summary stays under max_words
+  min_words: 60
+  max_words: 100
   request_timeout_sec: 20
   deadline_sec: 35                       # seconds after the SLA clock starts; after this, send the template summary
   min_budget_sec: 8                      # the model always gets at least this long, even if the feed was late
+  follow_up_model: ""                    # empty = same as model
+  follow_up_max_words: 30
+  follow_up_max_tokens: 120
   system_prompt: ""                      # empty = built-in prompt (see summarizer.py)
+
+quotes:                                  # current price and volume shown under each alert
+  enabled: true
+  timeout_sec: 4
+  index_symbol: "^NSEI"                  # Nifty 50 on Yahoo Finance, used to judge the follow-up
+
+follow_up:                               # the update sent after the alert: did the news move the price?
+  enabled: true
+  delay_min: 30
+  only_in_market_hours: true             # no follow-up for alerts that arrive after the close or on weekends
+  min_gap_min: 5                         # if the market closes sooner than this, skip it
+  categories: [announcement, corporate_action]
+  neutral_band_pct: 0.3                  # a move within this band, relative to the Nifty, is "no clear impact"
+  check_interval_sec: 15
+  max_retries: 3
+  summary_timeout_sec: 15
 
 sla:
   target_sec: 60
