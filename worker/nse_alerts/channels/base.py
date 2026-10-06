@@ -15,6 +15,7 @@ class ChannelError(Exception):
 
 class Channel:
     name = ""
+    free_text = False   # True when messages can be sent without an approved template
 
     def enabled(self) -> bool:
         raise NotImplementedError

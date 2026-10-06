@@ -103,6 +103,24 @@ follow_up:                               # the update sent after the alert: did 
   max_retries: 3
   summary_timeout_sec: 15
 
+signals:                                 # past similar news and what a Rs 10,000 buy would have done
+  enabled: true
+  lookback_years: 5
+  amount: 10000                          # rupees invested after each past case
+  sentiment_tolerance: 10                # past cases must score within this of today's score
+  tolerance_mode: points                 # points (60 matches 50-70) or percent (60 matches 54-66)
+  min_confidence: 0.5                    # items the model judged too generic to score are left out
+  min_cases: 5                           # fewer than this on the same stock: widen to all Nifty 50 stocks
+  fallback_to_nifty50: true
+  cooldown_days: 15                      # same-stock cases closer than this count once
+  budget_sec: 12                         # scoring must finish within this or the section is left out
+  send_details: true                     # second message listing each past case (Telegram)
+  use_filing_text: true                  # live: read the filing when the exchange text is too generic
+  score_model: ""                        # empty = same as summary.model
+  score_concurrency: 6
+  scoring_max_tokens: 120
+  maintenance_interval_sec: 21600        # refresh prices and settle new 15/30 day outcomes
+
 sla:
   target_sec: 60
   clock_start: listed                    # listed = from NSE dissemination time, detected = from our first sighting

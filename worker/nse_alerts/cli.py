@@ -13,6 +13,7 @@ from .app import App, load_universe, setup_logging
 from .config import ConfigStore
 from .context import fetch_symbol
 from .db import Database, utcnow
+from .signals import commands as sig
 from .summarizer import Summarizer, template_summary
 
 UNIVERSE_URL = "https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv"
@@ -138,6 +139,9 @@ async def cmd_status(args) -> None:
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")  # the rupee sign and bullets break the Windows console default
     load_dotenv(Path(__file__).resolve().parent.parent / ".env")
     parser = argparse.ArgumentParser(prog="nse_alerts")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -160,6 +164,22 @@ def main() -> None:
     p.add_argument("--mobile", required=True)
     p.add_argument("--symbols", required=True, help="comma separated, e.g. TCS,INFY")
     p.set_defaults(fn=cmd_add_subscriber)
+    p = sub.add_parser("signals-backfill", help="download prices and announcement history")
+    p.add_argument("--symbols", help="comma separated; default is all tracked stocks")
+    p.add_argument("--years", type=int)
+    p.set_defaults(fn=sig.cmd_signals_backfill)
+    p = sub.add_parser("signals-score", help="topic and sentiment for every stored item")
+    p.add_argument("--limit", type=int)
+    p.add_argument("--keywords", action="store_true", help="use keyword rules instead of the model")
+    p.add_argument("--pdf", action="store_true", help="read the filing PDF when the exchange text is generic")
+    p.set_defaults(fn=sig.cmd_signals_score)
+    sub.add_parser("signals-returns", help="15 and 30 day outcomes").set_defaults(fn=sig.cmd_signals_returns)
+    sub.add_parser("signals-stats").set_defaults(fn=sig.cmd_signals_stats)
+    p = sub.add_parser("signals-preview", help="show the past-signals section for a piece of news")
+    p.add_argument("--symbol", required=True)
+    p.add_argument("--subject", default="Outcome of Board Meeting")
+    p.add_argument("--detail", default="")
+    p.set_defaults(fn=sig.cmd_signals_preview)
     sub.add_parser("sync-universe").set_defaults(fn=cmd_sync_universe)
     sub.add_parser("status").set_defaults(fn=cmd_status)
     args = parser.parse_args()

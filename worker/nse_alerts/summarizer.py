@@ -175,7 +175,8 @@ class Summarizer:
     def __init__(self):
         self.client = httpx.AsyncClient()
 
-    async def _call(self, model: str, messages: list[dict], cfg: Config, timeout: float, max_tokens: int) -> str:
+    async def _call(self, model: str, messages: list[dict], cfg: Config, timeout: float, max_tokens: int,
+                    temperature: float | None = None) -> str:
         s = cfg.section("summary")
         key = cfg.secret("OPENROUTER_API_KEY")
         if not key:
@@ -183,7 +184,7 @@ class Summarizer:
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": float(s.get("temperature", 0.2)),
+            "temperature": float(s.get("temperature", 0.2)) if temperature is None else temperature,
             "max_tokens": max_tokens,
         }
         if s.get("provider_sort"):

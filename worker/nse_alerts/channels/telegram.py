@@ -40,6 +40,7 @@ class TelegramChannel(Channel):
     """Telegram through the MTProto API (Telethon), sending as a normal user account."""
 
     name = "telegram"
+    free_text = True
 
     def __init__(self, store: ConfigStore, db: Database):
         self.store = store

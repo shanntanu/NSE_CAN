@@ -17,6 +17,8 @@ from .poller import Poller
 from .quotes import QuoteService
 from .sources.bse import BseClient
 from .sources.nse import NseClient
+from .signals.prices import PriceStore
+from .signals.service import SignalService
 from .summarizer import Summarizer
 from .universe import Universe
 
@@ -65,8 +67,9 @@ class App:
         self.whatsapp = WhatsAppChannel(self.store)
         self.channels = {"telegram": self.telegram, "whatsapp": self.whatsapp}
         self.quotes = QuoteService()
+        self.signals = SignalService(self.store, self.db, self.summarizer, PriceStore(self.db), self.fetcher)
         self.pipeline = Pipeline(self.store, self.db, self.context, self.summarizer, self.fetcher, self.channels,
-                                 self.quotes)
+                                 self.quotes, self.signals)
         self.followups = FollowUps(self.store, self.db, self.summarizer, self.context, self.quotes, self.pipeline)
         self.pipeline.followups = self.followups
         self.nse = NseClient(self.store.cfg)
@@ -107,6 +110,7 @@ class App:
             asyncio.create_task(supervise("bse poller", self.poller.run_bse)),
             asyncio.create_task(supervise("context refresh", lambda: self.context.run(self.store))),
             asyncio.create_task(supervise("follow-ups", self.followups.run)),
+            asyncio.create_task(supervise("signals upkeep", lambda: self.signals.run(self.universe))),
         ]
         if self.telegram.client:
             tasks.append(asyncio.create_task(

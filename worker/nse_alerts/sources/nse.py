@@ -142,6 +142,11 @@ class NseClient:
         path = f"{self.ANNOUNCEMENTS}&from_date={d}&to_date={d}"
         return [announcement_to_item(r) for r in await self._get_json(path, timeout)]
 
+    async def announcements_for_symbol(self, symbol: str, timeout: float = 60) -> list[Item]:
+        """The full announcement history of one stock (several thousand items, about 3 MB)."""
+        path = f"{self.ANNOUNCEMENTS}&symbol={symbol}"
+        return [announcement_to_item(r) for r in await self._get_json(path, timeout)]
+
     async def corporate_actions(self, timeout: float = 8) -> list[Item]:
         return [corporate_action_to_item(r) for r in await self._get_json(self.ACTIONS, timeout)]
 

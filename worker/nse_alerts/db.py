@@ -51,7 +51,7 @@ def sqlite_schema(sql: str) -> str:
 
 
 def split_statements(sql: str) -> list[str]:
-    lines = [ln for ln in sql.splitlines() if not ln.strip().startswith("--")]
+    lines = [re.sub(r"--.*$", "", ln) for ln in sql.splitlines()]  # comments may contain semicolons
     return [s.strip() for s in "\n".join(lines).split(";") if s.strip()]
 
 
@@ -60,7 +60,9 @@ class Database:
         self.url = normalise_url(url if url is not None else os.environ.get("DATABASE_URL", ""))
         self.is_sqlite = self.url.startswith("sqlite")
         kwargs: dict[str, Any] = {}
-        if not self.is_sqlite:
+        if self.is_sqlite:
+            kwargs["connect_args"] = {"timeout": 60}  # wait for a busy file instead of failing
+        else:
             kwargs.update(pool_size=5, max_overflow=5, pool_pre_ping=True)
         self.engine: AsyncEngine = create_async_engine(self.url, **kwargs)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from typing import Any
 
@@ -10,6 +11,7 @@ from .config import Config, ConfigStore
 from .context import ContextStore
 from .db import Database, as_dt, utcnow
 from .messages import build_text, ist_clock
+from .signals.matching import SignalReport, signal_block, signal_details
 from .summarizer import SummaryResult, Summarizer, template_summary
 
 log = logging.getLogger(__name__)
@@ -27,6 +29,7 @@ class Pipeline:
         fetcher: AttachmentFetcher,
         channels: dict[str, Channel],
         quotes=None,
+        signals=None,
     ):
         self.store = store
         self.db = db
@@ -36,6 +39,8 @@ class Pipeline:
         self.channels = channels
         self.quotes = quotes
         self.followups = None  # set by the app once the follow-up service exists
+        self.signals = signals
+        self._background: set[asyncio.Task] = set()
 
     async def handle(self, event_id: int) -> None:
         try:
@@ -85,6 +90,10 @@ class Pipeline:
             if self.followups is not None and self.followups.wanted(ev, cfg):
                 index_task = asyncio.create_task(self.quotes.index(cfg))
 
+        sig_task = None
+        if self.signals is not None and cfg.get("signals.enabled", True):
+            sig_task = asyncio.create_task(self.signals.analyse(ev, cfg, att_task))
+
         summary = await self._summary(ev, att_task, cfg)
         await self.db.execute(
             "update events set summary = :s, summary_model = :m, summary_ms = :ms, summary_fallback = :fb "
@@ -93,7 +102,9 @@ class Pipeline:
         )
 
         quote = await self._result(quote_task)
-        rich, plain = build_text(ev, summary.text, quote)
+        report = await self._signal_report(sig_task, ev, cfg)
+        extra = signal_block(report) if report else ""
+        rich, plain = build_text(ev, summary.text, quote, extra)
         att: Attachment | None = None
         if att_task is not None:
             try:
@@ -104,6 +115,13 @@ class Pipeline:
         await asyncio.gather(
             *(self._deliver_channel(c, targets[c.name], ev, rich, plain, att, cfg) for c in channels if targets[c.name])
         )
+        if report is not None and report.cases and cfg.get("signals.send_details", True):
+            text = signal_details(report)
+            for c in channels:
+                if c.free_text and targets[c.name] and text:
+                    task = asyncio.create_task(self._send_details(c, targets[c.name], text))
+                    self._background.add(task)
+                    task.add_done_callback(self._background.discard)
         await self.db.execute("update events set status = 'done', processed_at = :now where id = :id",
                               id=event_id, now=utcnow())
         if self.followups is not None and quote is not None:
@@ -111,6 +129,34 @@ class Pipeline:
                 "select count(*) as n from deliveries where event_id = :id and status = 'sent'", id=event_id)
             if sent and int(sent["n"]) > 0:
                 await self.followups.schedule(ev, quote, await self._result(index_task))
+
+    async def _signal_report(self, task, ev: dict[str, Any], cfg: Config) -> SignalReport | None:
+        """The past-signals section, only if it is ready within what is left of the delivery budget."""
+        if task is None:
+            return None
+        elapsed = (utcnow() - self._clock_start(ev, cfg)).total_seconds()
+        left = float(cfg.get("sla.target_sec", 60)) - elapsed - 8
+        timeout = min(float(cfg.get("signals.budget_sec", 12)), max(0.5, left))
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except asyncio.TimeoutError:
+            log.warning("past-signals section for event %s was not ready in %.1fs, leaving it out", ev["id"], timeout)
+        except Exception:
+            log.exception("past-signals analysis failed for event %s", ev["id"])
+        return None
+
+    async def _send_details(self, channel: Channel, subs: list[dict[str, Any]], text: str) -> None:
+        """The case-by-case list, sent after the alert so it can never delay it. Not tracked in deliveries."""
+        sem = asyncio.Semaphore(channel.max_concurrency())
+
+        async def one(sub):
+            async with sem:
+                try:
+                    await channel.send_text(sub, html.escape(text), text)
+                except Exception as exc:
+                    log.warning("could not send the past-cases list to subscriber %s: %s", sub["id"], exc)
+
+        await asyncio.gather(*(one(s) for s in subs))
 
     @staticmethod
     async def _result(task):

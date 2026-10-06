@@ -79,6 +79,48 @@ Any value can be overridden with an environment variable, for example
 `NSE_ALERTS__summary__model=<any OpenRouter model id>` or `NSE_ALERTS__polling__nse__market_hours_interval_sec=3`.
 Secrets (OpenRouter key, Telegram and WhatsApp credentials) live only in `worker/.env`.
 
+## Past signals: what similar news did before
+
+Every alert can carry a short section such as "Past signals (TCS, dividend news, sentiment 62, 8 cases in 5 yrs: if
+₹10,000 was invested after each, 15 days avg +₹210 and 6 of 8 gained, 30 days ...)", plus a second message listing the
+cases. It works like this:
+
+- **Topic and sentiment:** each NSE announcement gets one of 18 fixed topics (dividend, financial results, buyback,
+  order win, regulatory ...) and a sentiment from 1 to 100 (50 is neutral), judged by your OpenRouter model from the
+  exchange text. When that text is too generic to judge ("X has informed the Exchange about ..."), the model's
+  confidence is low and the item is left out of matching. Topics and the prompt are in
+  `worker/nse_alerts/signals/taxonomy.py`.
+- **Matching:** same topic, sentiment within ±10 points (`signals.sentiment_tolerance`), within the last 5 years, same
+  stock. If the stock has fewer than 5 cases, it widens to all Nifty 50 stocks and says so.
+- **Returns:** buy at the first price a quick reader could get (before the open: that day's open; during the session:
+  that day's close; after the close: next open), sell at the close 15 and 30 calendar days later. Prices are daily
+  and adjusted for splits and dividends. It also shows what the Nifty 50 did over the same days, counts same-stock cases
+  closer than 15 days once, and ignores costs and taxes.
+- **Speed:** the history is built ahead of time; at alert time it is one scoring call plus a database query, and the
+  section is dropped rather than delaying the alert.
+
+Build the history once (on the worker, with the virtual environment active):
+
+```bash
+python -m nse_alerts.cli init-db                  # adds the new tables
+python -m nse_alerts.cli signals-backfill         # prices + 5 years of NSE announcements, free, about 10 minutes
+python -m nse_alerts.cli signals-score --pdf      # topic + sentiment for every item (uses OpenRouter)
+python -m nse_alerts.cli signals-returns          # 15 and 30 day outcomes
+python -m nse_alerts.cli signals-stats            # topics, score spread, how many were too generic
+python -m nse_alerts.cli signals-preview --symbol TCS --subject "Outcome of Board Meeting" --detail "Interim dividend of Rs 10 declared"
+```
+
+Try `signals-backfill --symbols TCS,INFY` and `signals-score --limit 200` first to see the quality and cost. On five
+stocks the history held about 3,900 items, so all 50 stocks is roughly 40,000 model calls. A cheap fast model is
+enough. `--pdf` reads each filing PDF when the exchange text is generic (about a third of items) and is much slower,
+but the text alone rarely says what happened. New alerts are added to the history automatically and their 15 and 30 day
+outcomes are filled in by a background job every 6 hours. Everything is in the `signals` section of `config.yaml`.
+
+Limits to keep in mind: it uses today's Nifty 50 members only (stocks that dropped out are missing, which flatters
+the results), 5 years gives few cases per stock and topic, and sentiment is a model's judgement. This is historical
+statistics, not a recommendation; check with a lawyer how SEBI's research analyst rules apply before showing it to
+the public.
+
 ## Switching on later
 - **WhatsApp:** set `channels.whatsapp.enabled: true`, add `WHATSAPP_TOKEN` and `WHATSAPP_PHONE_NUMBER_ID`, create and
   approve a message template (two body variables: title and summary), point Meta's webhook at

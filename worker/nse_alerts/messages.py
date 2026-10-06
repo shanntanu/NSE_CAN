@@ -81,10 +81,10 @@ def _assemble(event: dict, head: str, body: str, market: str, extra: str = "") -
     return "\n".join(rich)[:MAX_LEN], "\n".join(plain)[:MAX_LEN]
 
 
-def build_text(event: dict, summary: str, quote=None) -> tuple[str, str]:
-    """Return (html, plain) versions of the alert: bullets, then the price and volume line."""
+def build_text(event: dict, summary: str, quote=None, extra: str = "") -> tuple[str, str]:
+    """Return (html, plain) versions of the alert: bullets, the price and volume line, then any extra block."""
     label = LABELS.get(event["category"], event["category"].upper())
-    return _assemble(event, label, summary, market_line(quote))
+    return _assemble(event, label, summary, market_line(quote), extra)
 
 
 def build_follow_up_text(event: dict, summary: str, quote, since_alert_pct: float | None, verdict: str,
