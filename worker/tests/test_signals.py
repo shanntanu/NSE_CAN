@@ -98,41 +98,41 @@ def test_rupee_outcomes_for_ten_thousand():
 
 async def test_report_uses_the_same_stock_when_there_are_enough_cases(system):
     for i in range(6):
-        await seed_signal(system.db, "TCS", 100 + 40 * i, r15=2.0, r30=4.0)
-    await seed_signal(system.db, "INFY", 90, r15=-9.0, r30=-9.0)
-    r = await build_report(system.db, system.store.cfg, "TCS", "financial_results", 70, 0.8, utcnow())
+        await seed_signal(system.local, "TCS", 100 + 40 * i, r15=2.0, r30=4.0)
+    await seed_signal(system.local, "INFY", 90, r15=-9.0, r30=-9.0)
+    r = await build_report(system.local, system.store.cfg, "TCS", "financial_results", 70, 0.8, utcnow())
     assert r.scope == "stock" and len(r.cases) == 6 and r.enough
     assert r.d15.avg_pnl == pytest.approx(200) and r.d30.avg_pnl == pytest.approx(400) and r.d15.wins == 6
 
 
 async def test_report_widens_to_all_nifty_50_stocks_when_the_stock_has_too_few(system):
-    await seed_signal(system.db, "TCS", 100, r15=2.0)
+    await seed_signal(system.local, "TCS", 100, r15=2.0)
     for i, sym in enumerate(["INFY", "HCLTECH", "WIPRO", "TECHM", "ITC"]):
-        await seed_signal(system.db, sym, 100 + 50 * i, r15=1.0)
-    r = await build_report(system.db, system.store.cfg, "TCS", "financial_results", 70, 0.8, utcnow())
+        await seed_signal(system.local, sym, 100 + 50 * i, r15=1.0)
+    r = await build_report(system.local, system.store.cfg, "TCS", "financial_results", 70, 0.8, utcnow())
     assert r.scope == "nifty50" and len(r.cases) == 6 and r.enough
 
 
 async def test_report_filters_by_topic_sentiment_confidence_age_and_status(system):
-    await seed_signal(system.db, "TCS", 100, topic="financial_results", sentiment=70)            # counts
-    await seed_signal(system.db, "TCS", 200, topic="dividend", sentiment=70)                     # other topic
-    await seed_signal(system.db, "TCS", 300, topic="financial_results", sentiment=85)            # outside +-10
-    await seed_signal(system.db, "TCS", 400, topic="financial_results", sentiment=70, confidence=0.2)
-    await seed_signal(system.db, "TCS", 500, topic="financial_results", sentiment=70, status="pending")
-    await seed_signal(system.db, "TCS", 365 * 6, topic="financial_results", sentiment=70)        # older than 5 years
-    r = await build_report(system.db, system.store.cfg, "TCS", "financial_results", 70, 0.8, utcnow())
+    await seed_signal(system.local, "TCS", 100, topic="financial_results", sentiment=70)            # counts
+    await seed_signal(system.local, "TCS", 200, topic="dividend", sentiment=70)                     # other topic
+    await seed_signal(system.local, "TCS", 300, topic="financial_results", sentiment=85)            # outside +-10
+    await seed_signal(system.local, "TCS", 400, topic="financial_results", sentiment=70, confidence=0.2)
+    await seed_signal(system.local, "TCS", 500, topic="financial_results", sentiment=70, status="pending")
+    await seed_signal(system.local, "TCS", 365 * 6, topic="financial_results", sentiment=70)        # older than 5 years
+    r = await build_report(system.local, system.store.cfg, "TCS", "financial_results", 70, 0.8, utcnow())
     assert len(r.cases) == 1 and not r.enough
 
 
 async def test_generic_news_gets_no_section(system):
-    r = await build_report(system.db, system.store.cfg, "TCS", "financial_results", 50, 0.3, utcnow())
+    r = await build_report(system.local, system.store.cfg, "TCS", "financial_results", 50, 0.3, utcnow())
     assert r.low_information and signal_block(r) == ""
 
 
 async def test_the_text_for_the_alert_and_the_list_of_cases(system):
     for i in range(5):
-        await seed_signal(system.db, "TCS", 100 + 40 * i, r15=2.0, r30=-1.0)
-    r = await build_report(system.db, system.store.cfg, "TCS", "financial_results", 70, 0.8, utcnow())
+        await seed_signal(system.local, "TCS", 100 + 40 * i, r15=2.0, r30=-1.0)
+    r = await build_report(system.local, system.store.cfg, "TCS", "financial_results", 70, 0.8, utcnow())
     block = signal_block(r)
     assert "Past signals (TCS, financial results news, sentiment 70, 5 cases in 5 yrs)" in block
     assert "15 days: avg +₹200, 5 of 5 gained" in block and "30 days: avg -₹100, 0 of 5 gained" in block
@@ -142,7 +142,7 @@ async def test_the_text_for_the_alert_and_the_list_of_cases(system):
 
 
 async def test_no_comparable_cases_says_so(system):
-    r = await build_report(system.db, system.store.cfg, "TCS", "financial_results", 70, 0.8, utcnow())
+    r = await build_report(system.local, system.store.cfg, "TCS", "financial_results", 70, 0.8, utcnow())
     assert "no comparable past cases" in signal_block(r) and signal_details(r) == ""
 
 
@@ -188,7 +188,7 @@ async def test_scoring_falls_back_to_keywords_when_the_model_fails(system):
 
 async def test_score_pending_and_returns_fill_in_the_history(system):
     for uid, days in (("h1", 400), ("h2", 300)):
-        await system.db.execute(
+        await system.local.execute(
             "insert into event_signals (source, source_uid, symbol, category, subject, text_used, listed_at) "
             "values ('nse', :u, 'TCS', 'announcement', 'Outcome of Board Meeting', 'profit up', :l)",
             u=uid, l=utcnow() - timedelta(days=days))
@@ -198,19 +198,19 @@ async def test_score_pending_and_returns_fill_in_the_history(system):
     for symbol, base in (("TCS", 100.0), ("NIFTY50", 1000.0)):
         frame = prices(start=start.isoformat(), days=400, start_price=base)
         for d, row in frame.iterrows():
-            await system.db.execute(
+            await system.local.execute(
                 "insert into daily_prices (symbol, trade_date, open, close) values (:s, :d, :o, :c)",
                 s=symbol, d=d, o=float(row["open"]), c=float(row["close"]))
     done, missing = await system.signals.compute_returns()
     assert done == 2 and missing == 0
-    row = await system.db.fetch_one("select * from event_signals where source_uid = 'h1'")
+    row = await system.local.fetch_one("select * from event_signals where source_uid = 'h1'")
     assert row["returns_status"] == "done" and row["ret_15d_pct"] > 0 and row["entry_basis"] in ("open", "close")
 
 
 async def test_live_alert_carries_the_past_signals_section_and_a_details_message(system):
     sid = await add_subscriber(system.db)
     for i in range(6):
-        await seed_signal(system.db, "TCS", 100 + 40 * i, r15=2.0, r30=4.0)
+        await seed_signal(system.local, "TCS", 100 + 40 * i, r15=2.0, r30=4.0)
     system.nse.announcement_items = [announcement("1")]
     await system.poller.poll_nse_once(system.store.cfg)
     await settle()
@@ -219,7 +219,7 @@ async def test_live_alert_carries_the_past_signals_section_and_a_details_message
     assert "Past signals (TCS, financial results news, sentiment 70, 6 cases in 5 yrs)" in texts[0]
     assert "15 days: avg +₹200, 6 of 6 gained" in texts[0]
     assert any(t.startswith("Past cases: TCS") for t in texts[1:])
-    stored = await system.db.fetch_one("select topic, sentiment from event_signals where source_uid = '1'")
+    stored = await system.local.fetch_one("select topic, sentiment from event_signals where source_uid = '1'")
     assert stored["topic"] == "financial_results" and stored["sentiment"] == 70
 
 
@@ -255,7 +255,7 @@ def test_generic_exchange_text_is_recognised():
 
 async def test_history_scoring_reads_the_filing_when_the_text_is_generic(system):
     system.signals.fetcher.text = "Net profit rose 24% to Rs 1,200 crore; interim dividend Rs 10 per share."
-    await system.db.execute(
+    await system.local.execute(
         "insert into event_signals (source, source_uid, symbol, category, subject, text_used, attachment_url, listed_at) "
         "values ('nse', 'g1', 'TCS', 'announcement', 'Outcome of Board Meeting', 'X has informed the Exchange about "
         "Outcome of Board Meeting', 'https://x/f.pdf', :l)", l=utcnow() - timedelta(days=400))
@@ -268,19 +268,19 @@ async def test_history_scoring_reads_the_filing_when_the_text_is_generic(system)
 
     system.summarizer._call = spy
     assert await system.signals.score_pending(system.store.cfg, use_pdf=True) == 1
-    row = await system.db.fetch_one("select text_used, topic from event_signals where source_uid = 'g1'")
+    row = await system.local.fetch_one("select text_used, topic from event_signals where source_uid = 'g1'")
     assert "Net profit rose 24%" in row["text_used"] and "Net profit rose 24%" in seen[0]
     assert row["topic"] == "financial_results"
 
 
 async def test_history_scoring_leaves_the_text_alone_without_the_pdf_option(system):
     system.signals.fetcher.text = "should not be read"
-    await system.db.execute(
+    await system.local.execute(
         "insert into event_signals (source, source_uid, symbol, category, subject, text_used, attachment_url, listed_at) "
         "values ('nse', 'g2', 'TCS', 'announcement', 'Updates', 'short text', 'https://x/f.pdf', :l)",
         l=utcnow() - timedelta(days=400))
     await system.signals.score_pending(system.store.cfg)
-    row = await system.db.fetch_one("select text_used from event_signals where source_uid = 'g2'")
+    row = await system.local.fetch_one("select text_used from event_signals where source_uid = 'g2'")
     assert row["text_used"] == "short text"
 
 
@@ -290,5 +290,5 @@ async def test_live_scoring_reads_the_filing_when_the_exchange_text_is_generic(s
     system.nse.announcement_items = [announcement("1")]
     await system.poller.poll_nse_once(system.store.cfg)
     await settle()
-    row = await system.db.fetch_one("select text_used from event_signals where source_uid = '1'")
+    row = await system.local.fetch_one("select text_used from event_signals where source_uid = '1'")
     assert "Net profit rose 24%" in row["text_used"]

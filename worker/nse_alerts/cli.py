@@ -10,9 +10,10 @@ import httpx
 from dotenv import load_dotenv
 
 from .app import App, load_universe, setup_logging
+from .archive import archive_old, backup_sqlite
 from .config import ConfigStore
 from .context import fetch_symbol
-from .db import Database, utcnow
+from .db import Database, init_databases, local_url, open_databases, utcnow
 from .signals import commands as sig
 from .summarizer import Summarizer, template_summary
 
@@ -20,10 +21,47 @@ UNIVERSE_URL = "https://www.niftyindices.com/IndexConstituent/ind_nifty50list.cs
 
 
 async def cmd_init_db(args) -> None:
-    db = Database()
-    await db.init_schema()
-    print(f"schema ready on {db.url.split('@')[-1]}")
-    await db.close()
+    shared, local = open_databases()
+    await init_databases(shared, local)
+    print(f"shared database ready: {shared.url.split('@')[-1]}")
+    print(f"local (server) database ready: {local.url.split('@')[-1]}")
+    await shared.close()
+    await local.close()
+
+
+async def cmd_archive_now(args) -> None:
+    """Move alerts older than retention.shared_days from the shared database to the server database."""
+    shared, local = open_databases()
+    await init_databases(shared, local)
+    moved = await archive_old(shared, local, ConfigStore().cfg)
+    print(f"moved {moved} alerts to the server database")
+    await shared.close()
+    await local.close()
+
+
+async def cmd_backup_local(args) -> None:
+    """Make a consistent copy of the server database file (data/backups/, newest 7 kept)."""
+    dest = await asyncio.to_thread(
+        backup_sqlite, Database(local_url()).url, Path(__file__).resolve().parent.parent / "data" / "backups",
+        int(ConfigStore().cfg.get("retention.backups_to_keep", 7)))
+    print(f"backup written to {dest}" if dest else
+          "the local database is not a SQLite file here; back it up with pg_dump or a disk snapshot")
+
+
+async def cmd_db_sizes(args) -> None:
+    shared, local = open_databases()
+    size = await shared.size_bytes()
+    print("shared database:", f"{size / 1_048_576:.1f} MB" if size is not None else "SQLite file")
+    for table in ("subscribers", "subscriptions", "events", "deliveries", "corporate_actions", "follow_ups"):
+        row = await shared.fetch_one(f"select count(*) as n from {table}")
+        print(f"  {table:20} {row['n']} rows")
+    path = Path(__file__).resolve().parent.parent / "data" / "local.db"
+    print("local database:", f"{path.stat().st_size / 1_048_576:.1f} MB" if path.exists() else local.url.split("@")[-1])
+    for table in ("event_signals", "daily_prices", "context_cache", "event_raw", "events_archive", "deliveries_archive"):
+        row = await local.fetch_one(f"select count(*) as n from {table}")
+        print(f"  {table:20} {row['n']} rows")
+    await shared.close()
+    await local.close()
 
 
 async def cmd_run(args) -> None:
@@ -130,12 +168,15 @@ async def cmd_sync_universe(args) -> None:
 
 
 async def cmd_status(args) -> None:
-    db = Database()
-    for row in await db.fetch_all("select key, value, updated_at from system_status order by key"):
-        print(f"{row['key']:24} {row['updated_at']}  {row['value']}")
-    counts = await db.fetch_all("select status, count(*) as n from deliveries group by status")
+    shared, local = open_databases()
+    for title, db in (("local (live, every few seconds)", local), ("shared (what the website sees)", shared)):
+        print(f"{title}:")
+        for row in await db.fetch_all("select key, value, updated_at from system_status order by key"):
+            print(f"  {row['key']:24} {row['updated_at']}  {row['value']}")
+    counts = await shared.fetch_all("select status, count(*) as n from deliveries group by status")
     print("deliveries:", {r["status"]: r["n"] for r in counts})
-    await db.close()
+    await shared.close()
+    await local.close()
 
 
 def main() -> None:
@@ -146,6 +187,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="nse_alerts")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init-db").set_defaults(fn=cmd_init_db)
+    sub.add_parser("archive-now").set_defaults(fn=cmd_archive_now)
+    sub.add_parser("backup-local").set_defaults(fn=cmd_backup_local)
+    sub.add_parser("db-sizes").set_defaults(fn=cmd_db_sizes)
     sub.add_parser("run").set_defaults(fn=cmd_run)
     sub.add_parser("telegram-login").set_defaults(fn=cmd_telegram_login)
     p = sub.add_parser("poll-once")

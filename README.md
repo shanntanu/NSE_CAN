@@ -79,6 +79,30 @@ Any value can be overridden with an environment variable, for example
 `NSE_ALERTS__summary__model=<any OpenRouter model id>` or `NSE_ALERTS__polling__nse__market_hours_interval_sec=3`.
 Secrets (OpenRouter key, Telegram and WhatsApp credentials) live only in `worker/.env`.
 
+## Where the data lives
+
+Two databases, so the free Neon database stays small:
+
+| Database | Holds | Why there |
+| --- | --- | --- |
+| **Shared (Neon)**, `DATABASE_URL`, `db/schema.postgres.sql` | subscribers and their stocks, the last 30 days of alerts and deliveries, corporate actions, a heartbeat | the website needs these |
+| **Server (SQLite file)**, `LOCAL_DATABASE_URL`, `db/schema.local.sql` | 5 years of scored history, daily prices, cached company data, raw source JSON, alerts older than 30 days, live poll status | heavy, and only the worker reads it |
+
+The server database defaults to `worker/data/local.db`; set `LOCAL_DATABASE_URL` to use a Postgres on the server instead.
+`init-db` creates both. Every 6 hours the worker moves finished alerts older than `retention.shared_days` (30) from
+Neon to the server database, backs up the server file daily to `worker/data/backups/` (last 7 kept), and warns if Neon
+passes `retention.warn_shared_mb`. Live status is written to the server every poll but to Neon at most every 30 seconds.
+
+```bash
+python -m nse_alerts.cli db-sizes        # rows and sizes in both databases
+python -m nse_alerts.cli archive-now     # move old alerts now
+python -m nse_alerts.cli backup-local    # copy the server database file now
+```
+
+Copy `worker/data/backups/` off the server too (or snapshot the disk): the history exists nowhere else.
+Neon's free plan also limits compute time, and the worker keeps asking Neon for new sign-ups every
+`channels.telegram.verification_interval_sec` seconds, so check Neon's current free limits and raise that interval if needed.
+
 ## Past signals: what similar news did before
 
 Every alert can carry a short section such as "Past signals (TCS, dividend news, sentiment 62, 8 cases in 5 yrs: if

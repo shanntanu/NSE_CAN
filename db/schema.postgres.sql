@@ -1,6 +1,7 @@
--- Shared schema for the NSE alerts worker (Python) and the web app (Next.js on Vercel).
--- Single source of truth. The worker applies this file with `python -m nse_alerts.cli init-db`
--- (for SQLite in tests it is converted automatically). All timestamps are UTC (timestamptz).
+-- SHARED schema: the small database that both the worker (Python) and the web app (Vercel) use.
+-- It holds subscribers, their stocks, recent alerts and delivery results. Keep it small (Neon free tier).
+-- Heavy data (history, prices, cached company data) lives in db/schema.local.sql on the worker server.
+-- The worker applies this file with `python -m nse_alerts.cli init-db`. All timestamps are UTC.
 -- Keep the SQL portable: plain types, no extensions.
 
 create table if not exists subscribers (
@@ -103,13 +104,6 @@ create table if not exists deliveries (
 create index if not exists idx_deliveries_status on deliveries(status);
 create index if not exists idx_deliveries_provider on deliveries(provider_message_id);
 
--- Cached fundamentals and technicals per stock, refreshed by the worker.
-create table if not exists context_cache (
-  symbol     text primary key,
-  data       text not null,                             -- JSON
-  updated_at timestamptz not null default now()
-);
-
 -- Small key/value table: worker heartbeat, last poll results, feed health.
 create table if not exists system_status (
   key        text primary key,
@@ -140,44 +134,3 @@ create table if not exists follow_ups (
   processed_at       timestamptz
 );
 create index if not exists idx_follow_ups_due on follow_ups(status, due_at);
-
--- Adjusted daily prices (splits and dividends applied) for the tracked stocks and the Nifty 50 index (symbol NIFTY50).
-create table if not exists daily_prices (
-  symbol     text not null,
-  trade_date text not null,                             -- YYYY-MM-DD
-  open       double precision,
-  close      double precision,
-  primary key (symbol, trade_date)
-);
-
--- Every scored news item, past and live: its topic, sentiment 1-100 and what the stock did afterwards.
-create table if not exists event_signals (
-  id              bigserial primary key,
-  source          text not null default 'nse',
-  source_uid      text not null,
-  symbol          text not null,
-  category        text not null,                        -- announcement | corporate_action | news
-  subject         text,
-  text_used       text,                                 -- the text the score was based on
-  attachment_url  text,                                 -- the filing, read when the exchange text is too generic
-  listed_at       timestamptz not null,
-  topic           text,
-  sentiment       integer,                              -- 1 to 100, 50 is neutral
-  confidence      double precision,                     -- 0 to 1; low means the text was too generic to judge
-  rationale       text,
-  scored_model    text,
-  prompt_version  text,
-  scored_at       timestamptz,
-  entry_date      text,
-  entry_basis     text,                                 -- open | close
-  entry_price     double precision,
-  ret_15d_pct     double precision,
-  ret_30d_pct     double precision,
-  nifty_15d_pct   double precision,
-  nifty_30d_pct   double precision,
-  returns_status  text not null default 'pending',      -- pending | done | no_prices
-  unique (source, source_uid)
-);
-create index if not exists idx_signals_topic on event_signals(topic, sentiment);
-create index if not exists idx_signals_symbol on event_signals(symbol, listed_at);
-create index if not exists idx_signals_unscored on event_signals(scored_at);

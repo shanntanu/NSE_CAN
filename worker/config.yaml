@@ -152,6 +152,16 @@ channels:
     send_attachments: true
     max_concurrency: 8
 
+retention:                               # keep the small shared database (Neon) small
+  shared_days: 30                        # alerts older than this move to the server database; 0 = never move
+  run_every_sec: 21600
+  warn_shared_mb: 350                    # log a warning when the shared database passes this size
+  backup_every_hours: 24                 # copy of the server database file (data/backups/)
+  backups_to_keep: 7
+
+status:
+  shared_interval_sec: 30                # how often live status (heartbeat, feed health) is written to the shared database
+
 admin:
   notify_phone: ""                       # optional: Telegram alert to this number on feed outage/recovery
 

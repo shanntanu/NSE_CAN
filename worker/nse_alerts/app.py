@@ -4,14 +4,14 @@ import asyncio
 import logging
 from pathlib import Path
 
-from . import verification
+from . import archive, verification
 from .attachments import AttachmentFetcher
 from .channels.telegram import TelegramChannel
 from .channels.whatsapp import WhatsAppChannel
 from .config import ConfigStore
 from .context import ContextStore
 from .followup import FollowUps
-from .db import Database, utcnow
+from .db import Database, StatusWriter, init_databases, local_url, utcnow
 from .pipeline import Pipeline
 from .poller import Poller
 from .quotes import QuoteService
@@ -56,25 +56,28 @@ async def supervise(name: str, factory) -> None:
 
 
 class App:
-    def __init__(self, store: ConfigStore | None = None, db: Database | None = None):
+    def __init__(self, store: ConfigStore | None = None, db: Database | None = None, local: Database | None = None):
         self.store = store or ConfigStore()
-        self.db = db or Database()
+        self.db = db or Database()                      # shared and small: subscribers, recent alerts, deliveries
+        self.local = local or Database(local_url())     # heavy: history, prices, cached company data, archive
+        self.status = StatusWriter(self.db, self.local, float(self.store.cfg.get("status.shared_interval_sec", 30)))
         self.universe = load_universe(self.store)
-        self.context = ContextStore(self.db, self.universe)
+        self.context = ContextStore(self.local, self.universe)
         self.summarizer = Summarizer()
         self.fetcher = AttachmentFetcher(self.store.cfg)
         self.telegram = TelegramChannel(self.store, self.db)
         self.whatsapp = WhatsAppChannel(self.store)
         self.channels = {"telegram": self.telegram, "whatsapp": self.whatsapp}
         self.quotes = QuoteService()
-        self.signals = SignalService(self.store, self.db, self.summarizer, PriceStore(self.db), self.fetcher)
+        self.signals = SignalService(self.store, self.local, self.summarizer, PriceStore(self.local), self.fetcher)
         self.pipeline = Pipeline(self.store, self.db, self.context, self.summarizer, self.fetcher, self.channels,
                                  self.quotes, self.signals)
         self.followups = FollowUps(self.store, self.db, self.summarizer, self.context, self.quotes, self.pipeline)
         self.pipeline.followups = self.followups
         self.nse = NseClient(self.store.cfg)
         self.bse = BseClient(self.store.cfg, self.universe)
-        self.poller = Poller(self.store, self.db, self.universe, self.pipeline, self.nse, self.bse, self.notify_admin)
+        self.poller = Poller(self.store, self.db, self.universe, self.pipeline, self.nse, self.bse, self.notify_admin,
+                             local=self.local, status=self.status)
 
     async def notify_admin(self, text: str) -> None:
         phone = self.store.cfg.get("admin.notify_phone", "")
@@ -91,12 +94,12 @@ class App:
 
     async def heartbeat(self) -> None:
         while True:
-            await self.db.set_status("worker_heartbeat", utcnow().isoformat())
+            await self.status.set("worker_heartbeat", utcnow().isoformat())
             await asyncio.sleep(float(self.store.cfg.get("heartbeat_interval_sec", 10)))
 
     async def run(self) -> None:
         setup_logging(self.store.cfg.get("app.log_level", "INFO"))
-        await self.db.init_schema()
+        await init_databases(self.db, self.local)
         await self.context.load_from_db()
         log.info("tracking %d stocks; telegram=%s whatsapp=%s bse=%s",
                  len(self.universe.symbols),
@@ -111,6 +114,8 @@ class App:
             asyncio.create_task(supervise("context refresh", lambda: self.context.run(self.store))),
             asyncio.create_task(supervise("follow-ups", self.followups.run)),
             asyncio.create_task(supervise("signals upkeep", lambda: self.signals.run(self.universe))),
+            asyncio.create_task(supervise("archive and backup",
+                                          lambda: archive.run(self.store, self.db, self.local, self.status))),
         ]
         if self.telegram.client:
             tasks.append(asyncio.create_task(
@@ -124,7 +129,7 @@ class App:
 
     async def close(self) -> None:
         for closer in (self.nse.close, self.bse.close, self.summarizer.close, self.fetcher.close,
-                       self.telegram.close, self.whatsapp.close, self.db.close):
+                       self.telegram.close, self.whatsapp.close, self.db.close, self.local.close):
             try:
                 await closer()
             except Exception:

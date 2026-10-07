@@ -5,7 +5,7 @@ from datetime import timedelta
 
 from ..app import load_universe
 from ..config import ConfigStore
-from ..db import Database, utcnow
+from ..db import LOCAL_SCHEMA_FILE, Database, local_url, utcnow
 from ..sources.nse import NseClient
 from ..attachments import AttachmentFetcher
 from ..summarizer import Summarizer
@@ -28,8 +28,8 @@ def _symbols(args, store: ConfigStore) -> list[str]:
 async def cmd_signals_backfill(args) -> None:
     """Download prices and each stock's NSE announcement history (no model calls, no cost)."""
     store = ConfigStore()
-    db = Database()
-    await db.init_schema()
+    db = Database(local_url())
+    await db.init_schema(LOCAL_SCHEMA_FILE)
     svc = _service(store, db)
     years = args.years or int(store.cfg.get("signals.lookback_years", 5))
     symbols = _symbols(args, store)
@@ -51,7 +51,7 @@ async def cmd_signals_backfill(args) -> None:
 async def cmd_signals_score(args) -> None:
     """Give every stored item a topic and a 1-100 sentiment (uses your OpenRouter key, one call per item)."""
     store = ConfigStore()
-    db = Database()
+    db = Database(local_url())
     svc = _service(store, db)
     pending = await db.fetch_one("select count(*) as n from event_signals where scored_at is null")
     count = min(pending["n"], args.limit) if args.limit else pending["n"]
@@ -68,7 +68,7 @@ async def cmd_signals_score(args) -> None:
 async def cmd_signals_returns(args) -> None:
     """Work out what 10,000 rupees would have done 15 and 30 days after each scored item."""
     store = ConfigStore()
-    db = Database()
+    db = Database(local_url())
     svc = _service(store, db)
     done, missing = await svc.compute_returns()
     print(f"outcomes completed for {done} items; {missing} had no price data")
@@ -77,7 +77,7 @@ async def cmd_signals_returns(args) -> None:
 
 
 async def cmd_signals_stats(args) -> None:
-    db = Database()
+    db = Database(local_url())
     for title, sql in (
         ("returns status", "select returns_status as k, count(*) as n from event_signals group by returns_status"),
         ("topics", "select coalesce(topic, 'unscored') as k, count(*) as n from event_signals group by topic order by n desc"),
@@ -96,7 +96,7 @@ async def cmd_signals_stats(args) -> None:
 async def cmd_signals_preview(args) -> None:
     """Show the past-signals section as it would appear for a piece of news (needs the history built first)."""
     store = ConfigStore()
-    db = Database()
+    db = Database(local_url())
     svc = _service(store, db)
     ev = {"id": 0, "source": "preview", "source_uid": f"preview:{args.symbol}", "symbol": args.symbol.upper(),
           "category": "announcement", "subject": args.subject, "detail": args.detail, "listed_at": utcnow()}

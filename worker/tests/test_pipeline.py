@@ -68,13 +68,13 @@ async def test_same_item_is_not_alerted_twice(system):
     assert count["n"] == 1
 
 
-async def test_a_restart_does_not_resend_items_already_stored(system, store, db, universe):
+async def test_a_restart_does_not_resend_items_already_stored(system, store, db, local, universe):
     from nse_alerts.poller import Poller
     await add_subscriber(system.db)
     system.nse.announcement_items = [announcement("1")]
     await system.poller.poll_nse_once(system.store.cfg)
     await settle()
-    fresh = Poller(store, db, universe, system.pipeline, system.nse)  # empty in-memory memory, as after a restart
+    fresh = Poller(store, db, universe, system.pipeline, system.nse, local=local)  # empty in-memory memory, as after a restart
     await fresh.poll_nse_once(store.cfg)
     await settle()
     assert len(system.channel.texts) == 1

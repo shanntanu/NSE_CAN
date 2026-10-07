@@ -12,7 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 log = logging.getLogger(__name__)
 
-SCHEMA_FILE = Path(__file__).resolve().parents[2] / "db" / "schema.postgres.sql"
+DB_DIR = Path(__file__).resolve().parents[2] / "db"
+SCHEMA_FILE = DB_DIR / "schema.postgres.sql"        # shared and small: the website uses it too
+LOCAL_SCHEMA_FILE = DB_DIR / "schema.local.sql"     # heavy data, kept on the worker server only
+DEFAULT_LOCAL_PATH = Path(__file__).resolve().parents[1] / "data" / "local.db"
 
 
 def utcnow() -> datetime:
@@ -66,8 +69,8 @@ class Database:
             kwargs.update(pool_size=5, max_overflow=5, pool_pre_ping=True)
         self.engine: AsyncEngine = create_async_engine(self.url, **kwargs)
 
-    async def init_schema(self) -> None:
-        sql = SCHEMA_FILE.read_text(encoding="utf-8")
+    async def init_schema(self, schema_file: Path | None = None) -> None:
+        sql = (schema_file or SCHEMA_FILE).read_text(encoding="utf-8")
         if self.is_sqlite:
             sql = sqlite_schema(sql)
         async with self.engine.begin() as conn:
@@ -107,5 +110,57 @@ class Database:
             k=key, v=value, now=utcnow(),
         )
 
+    async def size_bytes(self) -> int | None:
+        """Size of the database in bytes (Postgres only; None for SQLite)."""
+        if self.is_sqlite:
+            return None
+        row = await self.fetch_one("select pg_database_size(current_database()) as n")
+        return int(row["n"]) if row else None
+
     async def close(self) -> None:
         await self.engine.dispose()
+
+
+def local_url() -> str:
+    """Where the heavy data lives: LOCAL_DATABASE_URL, or a SQLite file in worker/data/."""
+    url = os.environ.get("LOCAL_DATABASE_URL", "").strip()
+    if url:
+        return url
+    DEFAULT_LOCAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    return f"sqlite:///{DEFAULT_LOCAL_PATH.as_posix()}"
+
+
+def open_databases() -> tuple[Database, Database]:
+    """(shared, local): the small shared database, and the heavy one kept on the worker server."""
+    return Database(), Database(local_url())
+
+
+async def init_databases(shared: Database, local: Database) -> None:
+    await shared.init_schema(SCHEMA_FILE)
+    await local.init_schema(LOCAL_SCHEMA_FILE)
+
+
+class StatusWriter:
+    """Writes status keys to the local database every time, and to the shared one at most every few seconds.
+
+    The shared copy is what the website shows, so it only needs a coarse update; writing it less often keeps the
+    small hosted database quiet (and lets it sleep when nothing else is happening).
+    """
+
+    def __init__(self, shared: Database, local: Database, shared_interval_sec: float = 30.0):
+        self.shared = shared
+        self.local = local
+        self.interval = shared_interval_sec
+        self._last_shared: dict[str, float] = {}
+
+    async def set(self, key: str, value: str, force_shared: bool = False) -> None:
+        import time
+
+        await self.local.set_status(key, value)
+        now = time.monotonic()
+        if force_shared or now - self._last_shared.get(key, -1e9) >= self.interval:
+            self._last_shared[key] = now
+            try:
+                await self.shared.set_status(key, value)
+            except Exception:
+                log.warning("could not write %s to the shared database", key, exc_info=True)

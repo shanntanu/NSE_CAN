@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 from .config import Config, ConfigStore
-from .db import Database, utcnow
+from .db import Database, StatusWriter, utcnow
 from .market import market_state, poll_interval
 from .pipeline import Pipeline
 from .sources.base import Item, SourceError
@@ -30,9 +30,12 @@ class Poller:
     """Polls the exchange feeds, stores every new item and hands alertable ones to the pipeline."""
 
     def __init__(self, store: ConfigStore, db: Database, universe: Universe, pipeline: Pipeline,
-                 nse: NseClient, bse: BseClient | None = None, notify=None):
+                 nse: NseClient, bse: BseClient | None = None, notify=None, local: Database | None = None,
+                 status: StatusWriter | None = None):
         self.store = store
         self.db = db
+        self.local = local          # heavy data (raw source JSON) goes here, not to the small shared database
+        self.status = status
         self.universe = universe
         self.pipeline = pipeline
         self.nse = nse
@@ -80,12 +83,21 @@ class Poller:
             raise
 
     async def _insert_event(self, item: Item, detected: datetime, in_universe: bool, status: str) -> int | None:
+        event_id = await self._insert_event_row(item, detected, in_universe, status)
+        if event_id is not None and self.local is not None:
+            await self.local.execute(
+                "insert into event_raw (event_id, raw) values (:id, :raw) on conflict (event_id) do nothing",
+                id=event_id, raw=json.dumps(item.raw, default=str),
+            )
+        return event_id
+
+    async def _insert_event_row(self, item: Item, detected: datetime, in_universe: bool, status: str) -> int | None:
         return await self.db.insert_returning_id(
             INSERT_EVENT,
             source=item.source, uid=item.source_uid, category=item.category, symbol=item.symbol,
             company=item.company, subject=item.subject, detail=item.detail, url=item.attachment_url or None,
             size=item.attachment_size or None, listed=item.listed_at or detected, ctime=item.company_time,
-            detected=detected, uni=in_universe, raw=json.dumps(item.raw, default=str), status=status,
+            detected=detected, uni=in_universe, raw=None, status=status,
         )
 
     # ---- ingest ------------------------------------------------------------------
@@ -139,7 +151,7 @@ class Poller:
                 symbol=item.symbol, company=item.company, isin=e.get("isin"), series=e.get("series"),
                 subject=item.subject, ex=e.get("ex_date") or "-", rec=e.get("record_date") or "-",
                 bcs=e.get("bc_start"), bce=e.get("bc_end"), nds=e.get("nd_start"), nde=e.get("nd_end"),
-                fv=e.get("face_value"), uni=in_universe, eid=event_id, raw=json.dumps(item.raw, default=str),
+                fv=e.get("face_value"), uni=in_universe, eid=event_id, raw=None,
                 detected=detected,
             )
             if event_id is not None and status == "new":
@@ -181,12 +193,16 @@ class Poller:
 
     async def _record_poll(self, source: str, ok: bool, latency_ms: float, error: str = "") -> None:
         cfg = self.store.cfg
-        self.failures[source] = 0 if ok else self.failures[source] + 1
-        await self.db.set_status(
-            f"{source}_poll",
-            json.dumps({"ok": ok, "latency_ms": int(latency_ms), "failures": self.failures[source],
-                        "error": error, "at": utcnow().isoformat()}),
-        )
+        before = self.failures[source]
+        self.failures[source] = 0 if ok else before + 1
+        value = json.dumps({"ok": ok, "latency_ms": int(latency_ms), "failures": self.failures[source],
+                            "error": error, "at": utcnow().isoformat()})
+        if self.status is not None:
+            # every poll goes to the local database; the shared one only hears about it every so often,
+            # or at once when the feed starts or stops failing
+            await self.status.set(f"{source}_poll", value, force_shared=(ok != (before == 0)))
+        else:
+            await self.db.set_status(f"{source}_poll", value)
         threshold = int(cfg.get("polling.nse.failure_alert_after", 5))
         if not ok and self.failures[source] >= threshold and not self.outage_reported[source]:
             self.outage_reported[source] = True

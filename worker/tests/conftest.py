@@ -9,7 +9,7 @@ from nse_alerts.attachments import Attachment
 from nse_alerts.channels.base import Channel
 from nse_alerts.config import ConfigStore
 from nse_alerts.context import ContextStore
-from nse_alerts.db import Database, utcnow
+from nse_alerts.db import LOCAL_SCHEMA_FILE, Database, StatusWriter, utcnow
 from nse_alerts.followup import FollowUps
 from nse_alerts.quotes import Quote
 from nse_alerts.signals.prices import PriceStore
@@ -126,24 +126,34 @@ async def db(tmp_path):
 
 
 @pytest.fixture
+async def local(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'local.db'}")
+    await database.init_schema(LOCAL_SCHEMA_FILE)
+    yield database
+    await database.close()
+
+
+@pytest.fixture
 def universe():
     return Universe.load(WORKER.parent / "data" / "nifty50.csv")
 
 
 @pytest.fixture
-async def system(store, db, universe):
+async def system(store, db, local, universe):
     nse = FakeNse()
     channel = FakeChannel()
     summarizer = FakeSummarizer()
-    context = ContextStore(db, universe)
+    context = ContextStore(local, universe)
     quotes = FakeQuotes()
-    signals = SignalService(store, db, summarizer, PriceStore(db), FakeFetcher())
+    signals = SignalService(store, local, summarizer, PriceStore(local), FakeFetcher())
     pipeline = Pipeline(store, db, context, summarizer, FakeFetcher(), {"telegram": channel}, quotes, signals)
     followups = FollowUps(store, db, summarizer, context, quotes, pipeline)
     pipeline.followups = followups
-    poller = Poller(store, db, universe, pipeline, nse)
+    status = StatusWriter(db, local, 30)
+    poller = Poller(store, db, universe, pipeline, nse, local=local, status=status)
     return type("System", (), dict(nse=nse, channel=channel, summarizer=summarizer, context=context,
-                                   pipeline=pipeline, poller=poller, db=db, store=store, quotes=quotes, signals=signals,
+                                   pipeline=pipeline, poller=poller, db=db, local=local, status=status, store=store, quotes=quotes,
+                                   signals=signals,
                                    followups=followups))()
 
 
