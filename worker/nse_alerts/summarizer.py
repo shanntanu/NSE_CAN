@@ -47,6 +47,10 @@ class SummaryError(Exception):
     pass
 
 
+class SummaryAuthError(SummaryError):
+    """The key was refused or the account is out of credits: retrying cannot help until that is fixed."""
+
+
 @dataclass
 class SummaryResult:
     text: str
@@ -203,6 +207,8 @@ class Summarizer:
         except httpx.HTTPError as exc:
             raise SummaryError(f"{model}: {exc.__class__.__name__}") from exc
         if resp.status_code != 200:
+            if resp.status_code in (401, 402, 403):
+                raise SummaryAuthError(f"{model}: HTTP {resp.status_code} {resp.text[:200]}")
             raise SummaryError(f"{model}: HTTP {resp.status_code} {resp.text[:200]}")
         try:
             content = resp.json()["choices"][0]["message"]["content"]

@@ -53,6 +53,9 @@ async def cmd_signals_score(args) -> None:
     store = ConfigStore()
     db = Database(local_url())
     svc = _service(store, db)
+    if args.redo_fallback:
+        cleared = await svc.reset_keyword_scores()
+        print(f"cleared {cleared} items that only had a keyword guess; they will be scored by the model now")
     pending = await db.fetch_one("select count(*) as n from event_signals where scored_at is null")
     count = min(pending["n"], args.limit) if args.limit else pending["n"]
     how = "keyword rules (no model)" if args.keywords else f"model {store.cfg.get('signals.score_model') or store.cfg.get('summary.model')}"
@@ -60,7 +63,17 @@ async def cmd_signals_score(args) -> None:
     if args.pdf:
         print("reading each filing PDF when the exchange text is too generic (slower, better scores)")
     done = await svc.score_pending(store.cfg, args.limit, use_keywords=args.keywords, use_pdf=args.pdf)
-    print(f"scored {done}")
+    left = (await db.fetch_one("select count(*) as n from event_signals where scored_at is null"))["n"]
+    print(f"scored {done}; {left} still unscored")
+    if svc.last_run["failed"]:
+        print(f"{svc.last_run['failed']} items failed and were left unscored; run the command again to retry them")
+    if svc.last_run["stopped"]:
+        print("\nSTOPPED EARLY: OpenRouter refused the request, so nothing more can be scored right now.\n"
+              f"  {svc.last_run['stopped'][:300]}\n"
+              "  Add credits at https://openrouter.ai/settings/credits (or check the key), then run this command "
+              "again. Items already scored are kept.")
+    elif left == 0:
+        print("COMPLETE: every item has been scored. Next: signals-returns")
     await svc.summarizer.close()
     await db.close()
 
@@ -79,6 +92,9 @@ async def cmd_signals_returns(args) -> None:
 async def cmd_signals_stats(args) -> None:
     db = Database(local_url())
     for title, sql in (
+        ("scoring progress (scored_model: who scored it; keywords = a guess, redo with --redo-fallback)",
+         "select coalesce(scored_model, 'NOT SCORED YET') as k, count(*) as n from event_signals "
+         "group by scored_model order by n desc"),
         ("returns status", "select returns_status as k, count(*) as n from event_signals group by returns_status"),
         ("topics", "select coalesce(topic, 'unscored') as k, count(*) as n from event_signals group by topic order by n desc"),
         ("sentiment bands", "select (sentiment / 10) * 10 as k, count(*) as n from event_signals "

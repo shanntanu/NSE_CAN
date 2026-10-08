@@ -8,7 +8,7 @@ from typing import Any
 from ..config import Config, ConfigStore
 from ..db import Database, as_dt, utcnow
 from ..sources.nse import NseClient
-from ..summarizer import Summarizer, SummaryError
+from ..summarizer import Summarizer, SummaryAuthError, SummaryError
 from ..universe import Universe
 from .matching import SignalReport, build_report
 from .prices import INDEX_SYMBOL, PriceStore, compute_returns
@@ -29,8 +29,12 @@ class SignalService:
 
     # ---- scoring -----------------------------------------------------------------------
 
-    async def score(self, symbol: str, subject: str, detail: str, cfg: Config) -> Score:
-        """Topic and 1-100 sentiment from the exchange text. Falls back to keyword rules if no model answers."""
+    async def score(self, symbol: str, subject: str, detail: str, cfg: Config, fallback: bool = True) -> Score:
+        """Topic and 1-100 sentiment from the exchange text.
+
+        With fallback (live alerts) keyword rules answer when no model does. Without it (building history) a failure
+        is raised instead, so nothing is stored as scored unless a real model scored it.
+        """
         text = score_text(symbol, subject, detail)
         if text in self._cache:
             return self._cache[text]
@@ -39,6 +43,7 @@ class SignalService:
         messages = [{"role": "system", "content": system_prompt()}, {"role": "user", "content": text}]
         models = [m for m in (model, cfg.get("summary.fallback_model")) if m]
         result: Score | None = None
+        last_error: Exception = SummaryError("no model configured")
         for m in models:
             try:
                 raw = await self.summarizer._call(
@@ -46,9 +51,17 @@ class SignalService:
                     int(s.get("scoring_max_tokens", 120)), temperature=0.0)
                 result = parse_score(raw, m)
                 break
+            except SummaryAuthError as exc:
+                if not fallback:
+                    raise
+                last_error = exc
+                log.warning("scoring with %s failed: %s", m, exc)
             except (SummaryError, ValueError, KeyError) as exc:
+                last_error = exc
                 log.warning("scoring with %s failed: %s", m, exc)
         if result is None:
+            if not fallback:
+                raise last_error if isinstance(last_error, SummaryError) else SummaryError(str(last_error))
             result = keyword_score(subject, detail)
         self._cache[text] = result
         if len(self._cache) > 5000:
@@ -135,10 +148,13 @@ class SignalService:
         rows = await self.db.fetch_all(sql + (f" limit {int(limit)}" if limit else ""))
         sem = asyncio.Semaphore(int(cfg.get("signals.score_concurrency", 6)))
         done = 0
+        self.last_run = {"failed": 0, "stopped": ""}
 
         async def one(row: dict[str, Any]) -> None:
             nonlocal done
             async with sem:
+                if self.last_run["stopped"]:
+                    return
                 text = row["text_used"] or ""
                 if use_pdf and row.get("attachment_url") and is_generic(text) and self.fetcher is not None:
                     att = await self.fetcher.fetch(row["attachment_url"], cfg)
@@ -147,8 +163,16 @@ class SignalService:
                         text = (text + " " + extra).strip()[:1500]
                         await self.db.execute("update event_signals set text_used = :t where id = :id",
                                               t=text, id=row["id"])
-                score = (keyword_score(row["subject"], text) if use_keywords
-                         else await self.score(row["symbol"], row["subject"] or "", text, cfg))
+                try:
+                    score = (keyword_score(row["subject"], text) if use_keywords
+                             else await self.score(row["symbol"], row["subject"] or "", text, cfg, fallback=False))
+                except SummaryAuthError as exc:
+                    self.last_run["stopped"] = str(exc)   # out of credits or bad key: stop, keep what is scored
+                    return
+                except SummaryError as exc:
+                    self.last_run["failed"] += 1          # left unscored, picked up on the next run
+                    log.warning("item %s left unscored: %s", row["id"], exc)
+                    return
                 await self._save_score(row["id"], score)
                 done += 1
                 if done % 200 == 0:
@@ -156,6 +180,12 @@ class SignalService:
 
         await asyncio.gather(*(one(r) for r in rows))
         return done
+
+    async def reset_keyword_scores(self) -> int:
+        """Clear scores that were only keyword guesses (left by a run that could not reach the model)."""
+        return await self.db.execute(
+            "update event_signals set topic = null, sentiment = null, confidence = null, rationale = null, "
+            "scored_model = null, prompt_version = null, scored_at = null where scored_model = 'keywords'")
 
     async def download_prices(self, symbols: list[str], years: int, attempts: int = 4) -> list[str]:
         """Fetch daily prices with pauses and retries (Yahoo refuses rapid-fire requests). Returns failed symbols."""

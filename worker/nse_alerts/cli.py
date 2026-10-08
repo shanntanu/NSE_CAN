@@ -216,6 +216,8 @@ def main() -> None:
     p.add_argument("--limit", type=int)
     p.add_argument("--keywords", action="store_true", help="use keyword rules instead of the model")
     p.add_argument("--pdf", action="store_true", help="read the filing PDF when the exchange text is generic")
+    p.add_argument("--redo-fallback", action="store_true",
+                   help="re-score items that only got a keyword guess (for example after a credits error)")
     p.set_defaults(fn=sig.cmd_signals_score)
     sub.add_parser("signals-returns", help="15 and 30 day outcomes").set_defaults(fn=sig.cmd_signals_returns)
     sub.add_parser("signals-stats").set_defaults(fn=sig.cmd_signals_stats)
